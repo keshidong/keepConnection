@@ -1,49 +1,109 @@
 // error类型 todo:ts? 需要统一timeoutP定义的error和retry, next函数定义的error
-const timeoutP = (timeMS, message = 'timeout' ) => (
+const timeoutP = (timeMS) => (
     new Promise((resolve) => {
-        setTimeout(() => { resolve([{ message }]) }, timeMS)
+        if (timeMS <= 0) {
+            // todo:
+            resolve(null)
+        } else if (timeMS === Infinity) {
+            // no resolve
+        } else {
+            setTimeout(() => { resolve(null) }, timeMS)
+        }
     })
 )
 
-export const makeRetryUnlimited = (
+const redefinedRequest = (
     request,
-    stop = () => (false), // stop同步调用
-) => {
-    const retryUnlimited = async (lastRequestRes) => {
-        const errMsg = stop(lastRequestRes)
-        if (errMsg) {
-            // break retry
-            return [errMsg, null]
-        }
+    minInterval = () => (0),
+    maxInterval = () => (Infinity),
+) => async (lastRequestRes, exportCall) => {
+    const requestP = request(lastRequestRes)
+    // 处理请求结束
+    requestP.then((res) => {
+        exportCall(res)
+    })
 
-        // hook
-        const [requestErr, res] = await request(lastRequestRes)
-        if (!requestErr) {
-            return [null, res]
-        }
+    // 计算下次轮询时机并等待
+    await Promise.race([
+        Promise.all([requestP, timeoutP(minInterval(lastRequestRes))]),
+        timeoutP(maxInterval(lastRequestRes))
+    ])
+}
 
-        return retryUnlimited(lastRequestRes)
-    }
-    return retryUnlimited
+export const makeRetryUnlimited = (
+    rRequest,
+    stop = () => (false),
+    minRetryInterval,
+    maxRetryInterval,
+) => (lastRequestRes) => {
+    let isResolved = false
+
+    return new Promise((resolve) => {
+        // 装饰resolve
+        resolve = ((resolve2) => (...args) => {
+            isResolved = true
+            resolve2(...args)
+        })(resolve)
+
+        const retryUnlimited = async () => {
+            // 外部终止retry
+            const isBreak = stop(lastRequestRes)
+            if (isBreak) {
+                resolve([{ message: 'retry be terminal' }, null])
+                return
+            }
+
+            // todo:抽离这部分逻辑
+            await rRequest(lastRequestRes, () => {
+
+            })
+            // 发起请求
+            const requestP = request(lastRequestRes)
+
+            // 处理请求成功
+            requestP.then(([requestErr, res]) => {
+                if (!requestErr) {
+                    resolve([null, res])
+                }
+            })
+
+            // 计算下次轮询时机并等待
+            await Promise.race([
+                Promise.all([requestP, timeoutP(minRetryInterval(lastRequestRes))]),
+                timeoutP(maxRetryInterval(lastRequestRes))
+            ])
+
+            if (!isResolved) {
+                // 轮询
+                retryUnlimited()
+            }
+        }
+        retryUnlimited()
+    })
 }
 
 // 正常轮询
 export const makeNextUnlimited = (
-    request,
-    stop = () => (false),
-    error = () => {},
+    retry,
+    stop,
+    minInterval,
 ) => async function nextUnlimited(lastRequestRes = null) {
-    const errMsg = stop(lastRequestRes)
-    if (errMsg) {
+    const isBreak = stop(lastRequestRes)
+
+    if (isBreak) {
         return
     }
 
-    const [err, curRequestRes] = await request(lastRequestRes)
+    const retryP = retry(lastRequestRes)
+    const minIntervalP = timeoutP(minInterval)
+
+    const [err, curRequestRes] = await retryP
     if (err) {
-        error(err, lastRequestRes)
+        // retry被停止
         return
     }
 
+    await minIntervalP
     nextUnlimited(curRequestRes)
 }
 
@@ -55,48 +115,9 @@ const defaultRetryMaxIntervalTimeMS = 30000
 
 const keepConnection = async (request, initRes, stop, {
     nextMinIntervalTimeMS = () => (defaultMinIntervalTimeMS),
-    nextMaxIntervalTimeMS = () => (defaultMaxIntervalTimeMS),
     retryMinIntervalTimeMS = () => (defaultRetryMinIntervalTimeMS),
     retryMaxIntervalTimeMS = () => (defaultRetryMaxIntervalTimeMS),
 }) => {
-    const retryUnlimited = (() => {
-        let retryMinIntervalTimeMSP
-        makeRetryUnlimited(async (lastRequestRes) => {
-            // todo
-            stop(lastRequestRes)
-
-            retryMinIntervalTimeMSP = timeoutP(retryMinIntervalTimeMS(lastRequestRes))
-
-            const retryMaxIntervalTimeMSP = timeoutP(retryMaxIntervalTimeMS(defaultRetryMaxIntervalTimeMS))
-            const [err, requestRes] = await Promise.race([retryMaxIntervalTimeMSP, request(lastRequestRes)])
-            await Promise.resolve(retryMinIntervalTimeMSP)
-
-            return [err, requestRes]
-        }, (res) => {
-            return stop('retry', res)
-        })
-    })()
-
-    const nextUnlimited = (() => {
-        let nextMinIntervalTimeMS
-        makeNextUnlimited(async (lastRequestRes) => {
-            nextMinIntervalTimeMS = timeoutP(nextMinIntervalTimeMS(lastRequestRes))
-
-            const nextMaxIntervalTimeMSP = timeoutP(nextMaxIntervalTimeMS(lastRequestRes))
-            const [err, requestRes] = Promise.race([nextMaxIntervalTimeMSP, request(lastRequestRes)])
-            await Promise.resolve(nextMinIntervalTimeMS)
-            return [err, requestRes]
-        }, (res) => {
-            return stop('next', res)
-        }, async (err, lastRequestRes) => {
-            // handle error
-            const [retryErr, requestRes] = await retryUnlimited(lastRequestRes)
-            if (!retryErr) {
-                nextUnlimited(requestRes)
-            }
-        })
-    })()
-    nextUnlimited(initRes)
 }
 
 export default keepConnection
