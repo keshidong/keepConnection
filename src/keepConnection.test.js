@@ -1,4 +1,99 @@
-import { makeRetryUnlimited } from './keepConnection'
+import { makeValidRequestWithRetry } from './keepConnection-v2'
+
+const RequestStatusType = {
+    FAILED: 1,
+    SUCCESS: 2,
+}
+
+const requestsMock = [{
+    type: RequestStatusType.FAILED,
+    rt: 2000,
+}, {
+    type: RequestStatusType.FAILED,
+    rt: 4000
+}, {
+    type: RequestStatusType.FAILED,
+    rt: 1000
+}, {
+    type: RequestStatusType.FAILED,
+    rt: 100
+}, {
+    type: RequestStatusType.SUCCESS,
+    rt: 200,
+    data: { interval: 1000 }
+}, {
+    type: RequestStatusType.SUCCESS,
+    rt: 1000,
+    data: { interval: 1500 }
+}]
+
+let i = 0
+const getRequestMock = () => {
+    const r = requestsMock[i]
+    i += 1
+    return r
+}
+
+const recordRequestInfo = []
+
+const request = (lastRequestRes) => {
+    const r = getRequestMock()
+
+    const rInfo = {
+        start: new Date().getTime(),
+        requestData: lastRequestRes,
+        type: r.type
+    }
+    recordRequestInfo.push(rInfo)
+    return new Promise((resolve) => {
+        setTimeout(() => {
+            if (r.type === RequestStatusType.FAILED) {
+                resolve([{}])
+                rInfo.end = new Date().getTime()
+            }
+
+            if (r.type === RequestStatusType.SUCCESS) {
+                resolve([null, r.data])
+                rInfo.end = new Date().getTime()
+            }
+        }, r.rt)
+    })
+}
+
+
+
+const retryMinIntervalTimeMS = () => (1000)
+const retryMaxIntervalTimeMS = () => (3000)
+
+const retryTimeRange = timeRangeMinMax(retryMinIntervalTimeMS, retryMaxIntervalTimeMS)
+
+
+test('makeValidRequestWithRetry', async (done) => {
+    const [p, stopRetry] = makeValidRequestWithRetry(request, retryTimeRange)(null)
+    const [err, res] = await p
+
+    // 检查返回结果是否符合预期
+    expect(err).toBeNull()
+
+    let successRequest = null
+    requestsMock.some((item) => {
+        const isMatch = item.type === RequestErrorType.SUCCESS
+        if (isMatch) {
+            successRequest = item
+        }
+        return isMatch
+    })
+    expect(res).toEqual(successRequest)
+
+
+    recordRequestInfo.forEach((item, index) => {
+        if (index < item.length - 1) {
+            expect(item.).toEqual(successRequest)
+        }
+    })
+
+
+}, 50000)
 
 const rt = [
     () => (Math.random() * 100 + 100),

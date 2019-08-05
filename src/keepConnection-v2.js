@@ -21,7 +21,7 @@ const timeRangeMinMax = (makeMinP = () => (0), makeMaxP = () => (Infinity)) => (
     ])
 )
 
-const makeValidRequestWithRetry = (request, timeRange) => {
+export const makeValidRequestWithRetry = (request, timeRange) => {
     return (lastRequestRes) => {
         let stopRetry = () => {}
 
